@@ -10,7 +10,7 @@
     terminate/1
 ]).
 
--record(state, {level, socket, destination, formatter}).
+-record(state, {level, host, port, socket, formatter}).
 
 -spec init(list() | map()) -> {ok, #state{}}.
 init(Opts) when erlang:is_list(Opts) ->
@@ -46,10 +46,11 @@ terminate(#state{socket = Socket}) ->
 
 -spec init_state(#state{}) -> #state{}.
 init_state(#{} = Opts) ->
-    Destination = {maps:get(host, Opts), maps:get(port, Opts)},
     Level = lager_util:config_to_mask(maps:get(level, Opts, info)),
+    Host = maps:get(host, Opts),
+    Port = maps:get(port, Opts),
     Formatter = maps:get(formatter, Opts, undefined),
-    #state{level = Level, destination = Destination, formatter = Formatter}.
+    #state{level = Level, host = Host, port = Port, formatter = Formatter}.
 
 -spec init_socket(#state{}) -> #state{}.
 init_socket(#state{} = State) ->
@@ -59,14 +60,14 @@ init_socket(#state{} = State) ->
     end.
 
 -spec do_log(lager_msg:lager_msg(), #state{}) -> {ok, #state{}}.
-do_log(Message, #state{socket = Socket, destination = Destination} = State) ->
+do_log(Message, #state{socket = Socket, host = Host, port = Port} = State) ->
     Payload = [
         {message, lager_msg:message(Message)},
         {severity, lager_msg:severity(Message)},
         {'@.timestamp', get_timestamp(lager_msg:timestamp(Message))},
         {fields, do_format(lager_msg:metadata(Message), State)}
     ],
-    {gen_udp:send(Socket, Destination, jsx:encode(Payload)), State}.
+    {gen_udp:send(Socket, Host, Port, jsx:encode(Payload)), State}.
 
 -spec do_format(list(), #state{}) -> map().
 do_format(Meta, #state{formatter = undefined}) ->
