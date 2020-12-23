@@ -62,9 +62,9 @@ init_socket(#state{} = State) ->
 -spec do_log(lager_msg:lager_msg(), #state{}) -> {ok, #state{}}.
 do_log(Message, #state{socket = Socket, host = Host, port = Port} = State) ->
     Payload = [
-        {message, lager_logstash:format(lager_msg:message(Message))},
-        {severity, lager_logstash:format(lager_msg:severity(Message))},
+        {severity, lager_msg:severity(Message)},
         {'@.timestamp', get_timestamp(lager_msg:timestamp(Message))},
+        {message, unicode:characters_to_binary(lager_msg:message(Message))},
         {fields, do_format(lager_msg:metadata(Message), State)}
     ],
     {gen_udp:send(Socket, Host, Port, jsx:encode(Payload)), State}.
