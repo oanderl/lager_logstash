@@ -10,7 +10,7 @@
     terminate/1
 ]).
 
--record(state, {level, host, port, socket, formatter}).
+-record(state, {level, host, port, socket, blacklist, whitelist}).
 
 -spec init(list() | map()) -> {ok, #state{}}.
 init(Opts) when erlang:is_list(Opts) ->
@@ -30,7 +30,7 @@ handle_call(_, State) ->
 -spec handle_event(term(), #state{}) -> {ok, #state{}}.
 handle_event({log, Message}, #state{level = Level} = State) ->
     case lager_util:is_loggable(Message, Level, ?MODULE) of
-        true -> do_log(Message, State);
+        true -> send_message(Message, State);
         false -> {ok, State}
     end;
 handle_event(_, State) ->
@@ -46,11 +46,13 @@ terminate(#state{socket = Socket}) ->
 
 -spec init_state(#state{}) -> #state{}.
 init_state(#{} = Opts) ->
-    Level = lager_util:config_to_mask(maps:get(level, Opts, info)),
-    Host = maps:get(host, Opts),
-    Port = maps:get(port, Opts),
-    Formatter = maps:get(formatter, Opts, undefined),
-    #state{level = Level, host = Host, port = Port, formatter = Formatter}.
+    #state{
+        level = lager_util:config_to_mask(maps:get(level, Opts, info)),
+        host = maps:get(host, Opts),
+        port = maps:get(port, Opts),
+        blacklist = maps:get(blacklist, Opts, []),
+        whitelist = maps:get(whitelist, Opts, [])
+    }.
 
 -spec init_socket(#state{}) -> #state{}.
 init_socket(#state{} = State) ->
@@ -59,24 +61,57 @@ init_socket(#state{} = State) ->
         {error, Reason} -> {error, Reason}
     end.
 
--spec do_log(lager_msg:lager_msg(), #state{}) -> {ok, #state{}}.
-do_log(Message, #state{socket = Socket, host = Host, port = Port} = State) ->
+-spec send_message(lager_msg:lager_msg(), #state{}) -> {ok, #state{}}.
+send_message(Message, #state{socket = Socket, host = Host, port = Port} = State) ->
     Payload = [
         {severity, lager_msg:severity(Message)},
         {'@.timestamp', get_timestamp(lager_msg:timestamp(Message))},
         {message, unicode:characters_to_binary(lager_msg:message(Message))},
-        {fields, do_format(lager_msg:metadata(Message), State)}
+        {fields, get_safe_fields(lager_msg:metadata(Message), State)}
     ],
     {gen_udp:send(Socket, Host, Port, jsx:encode(Payload)), State}.
-
--spec do_format(list(), #state{}) -> map().
-do_format(Meta, #state{formatter = undefined}) ->
-    lager_logstash:format(Meta);
-do_format(Meta, #state{formatter = {Module, Function}}) ->
-    erlang:apply(Module, Function, [Meta]).
 
 -spec get_timestamp(erlang:timestamp()) -> binary().
 get_timestamp({MegaSecs, Secs, MicroSecs}) ->
     MilliSecs = MegaSecs * 1000000000 + Secs * 1000 + MicroSecs div 1000,
     DateTime = calendar:system_time_to_rfc3339(MilliSecs, [{offset, "Z"}, {unit, millisecond}]),
     erlang:list_to_binary(DateTime).
+
+-spec get_safe_fields(list(), #state{}) -> map().
+get_safe_fields(Meta, #state{blacklist = Blacklist} = State) ->
+    lists:foldl(fun ({Key, Value}, Acc) ->
+        case lists:member(Key, Blacklist) of
+            false -> Acc ++ [get_safe_field({Key, Value}, State)];
+            true -> Acc
+        end
+    end, [], Meta).
+
+-spec get_safe_field({term(), term()}, #state{}) -> {atom() | binary(), term()}.
+get_safe_field({Key, Value}, #state{whitelist = Whitelist}) ->
+    case lists:member(Key, Whitelist) of
+        false -> {get_safe_key(Key), get_safe_value(Value)};
+        true -> {get_safe_key(Key), Value}
+    end.
+
+-spec get_safe_key(term()) -> atom() | binary().
+get_safe_key(Key) when erlang:is_atom(Key); erlang:is_binary(Key) -> Key;
+get_safe_key(Key) when erlang:is_list(Key) -> erlang:list_to_binary(Key).
+
+-spec get_safe_value(term()) -> binary().
+get_safe_value(Value) when erlang:is_atom(Value) -> Value;
+get_safe_value(Value) when erlang:is_binary(Value) -> Value;
+get_safe_value(Value) when erlang:is_pid(Value) ->
+    erlang:list_to_binary(erlang:pid_to_list(Value));
+get_safe_value(Value) when erlang:is_port(Value) ->
+    erlang:list_to_binary(erlang:port_to_list(Value));
+get_safe_value(Value) when erlang:is_reference(Value) ->
+    erlang:list_to_binary(erlang:ref_to_list(Value));
+get_safe_value(Value) when erlang:is_function(Value) ->
+    erlang:list_to_binary(erlang:fun_to_list(Value));
+get_safe_value(Value) when not erlang:is_list(Value) ->
+    erlang:list_to_binary(io_lib:format("~p", [Value]));
+get_safe_value(Value) when erlang:is_list(Value) ->
+    case io_lib:char_list(Value) of
+        true -> erlang:list_to_binary(Value);
+        false -> erlang:list_to_binary(io_lib:format("~p", [Value]))
+    end.
