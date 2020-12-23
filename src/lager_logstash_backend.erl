@@ -62,8 +62,8 @@ init_socket(#state{} = State) ->
 -spec do_log(lager_msg:lager_msg(), #state{}) -> {ok, #state{}}.
 do_log(Message, #state{socket = Socket, host = Host, port = Port} = State) ->
     Payload = [
-        {message, lager_msg:message(Message)},
-        {severity, lager_msg:severity(Message)},
+        {message, lager_logstash:format(lager_msg:message(Message))},
+        {severity, lager_logstash:format(lager_msg:severity(Message))},
         {'@.timestamp', get_timestamp(lager_msg:timestamp(Message))},
         {fields, do_format(lager_msg:metadata(Message), State)}
     ],
