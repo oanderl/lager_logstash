@@ -28,6 +28,8 @@ handle_call(_, State) ->
     {ok, ok, State}.
 
 -spec handle_event(term(), #state{}) -> {ok, #state{}}.
+handle_event({log, _}, #state{socket = undefined} = State) ->
+    {ok, State};
 handle_event({log, Message}, #state{level = Level} = State) ->
     case lager_util:is_loggable(Message, Level, ?MODULE) of
         true -> send_message(Message, State);
@@ -36,9 +38,9 @@ handle_event({log, Message}, #state{level = Level} = State) ->
 handle_event(_, State) ->
     {ok, State}.
 
--spec handle_info(_, #state{}) -> {ok, #state{}}.
-handle_info(_, State) ->
-    {ok, State}.
+-spec handle_info(term(), #state{}) -> {ok, #state{}}.
+handle_info(retry, State) ->
+    init_socket(State).
 
 -spec terminate(#state{}) -> ok.
 terminate(#state{socket = Socket}) ->
@@ -57,8 +59,11 @@ init_state(#{} = Opts) ->
 -spec init_socket(#state{}) -> #state{}.
 init_socket(#state{} = State) ->
     case gen_udp:open(0, [binary, {active, false}]) of
-        {ok, Socket} -> {ok, State#state{socket = Socket}};
-        {error, Reason} -> {error, Reason}
+        {error, _} ->
+            erlang:send_after(1000, self(), retry),
+            {ok, State#state{socket = undefined}};
+        {ok, Socket} ->
+            {ok, State#state{socket = Socket}}
     end.
 
 -spec send_message(lager_msg:lager_msg(), #state{}) -> {ok, #state{}}.
@@ -69,7 +74,13 @@ send_message(Message, #state{socket = Socket, host = Host, port = Port} = State)
         {message, unicode:characters_to_binary(lager_msg:message(Message))},
         {fields, get_safe_fields(lager_msg:metadata(Message), State)}
     ],
-    {gen_udp:send(Socket, Host, Port, jsx:encode(Payload)), State}.
+    case gen_udp:send(Socket, Host, Port, jsx:encode(Payload)) of
+        {error, _} ->
+            gen_udp:close(Socket),
+            erlang:send_after(1000, self(), retry),
+            {ok, State#state{socket = undefined}};
+        ok -> {ok, State}
+    end.
 
 -spec get_timestamp(erlang:timestamp()) -> binary().
 get_timestamp({MegaSecs, Secs, MicroSecs}) ->
